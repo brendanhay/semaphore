@@ -1,0 +1,14 @@
+{application, semaphore, [
+    {description, "Resource tracking and destruction"},
+    {vsn, "0.1.0"},
+    {registered, [
+        semaphore_sup,
+        semaphore_srv
+    ]},
+    {applications, [
+        kernel,
+        stdlib
+    ]},
+    {mod, {semaphore, []}},
+    {env, []}
+]}.

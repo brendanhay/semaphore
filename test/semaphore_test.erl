@@ -1,5 +1,5 @@
 %% @doc
--module(semaphore_tests).
+-module(semaphore_test).
 
 -compile(export_all).
 
@@ -23,7 +23,7 @@ setup() ->
     Key = key,
     Res = resource,
     Self = self(),
-    Dtor = fun(X) -> Self ! X, timer:sleep(2), error(process_info(Self, messages)) end,
+    Dtor = fun(X) -> Self ! X, timer:sleep(5), ok end,
     Checkout = fun() -> semaphore:checkout(Key, fun() -> Res end, Dtor) end,
     {Key, Res, Checkout, Dtor}.
 

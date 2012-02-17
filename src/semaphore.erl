@@ -18,15 +18,20 @@
 %% API
 %%
 
+-spec checkout(key(), ctor(), dtor()) -> resource().
 %% @doc
-checkout(Key, Ctor, Dtor) -> gen_server:call(?SERVER, {checkout, Key, Ctor, Dtor}).
+checkout(Key, Ctor, Dtor) ->
+    gen_server:call(?SERVER, {checkout, Key, Ctor, Dtor}).
 
+-spec info() -> {[lock()], [{key(), resource()}]}.
 %% @doc
 info() -> gen_server:call(?SERVER, info).
 
+-spec start() ->  ok | {error, _}.
 %% @doc
 start() -> application:start(?MODULE).
 
+-spec stop() -> ok.
 %% @doc
 stop() -> application:stop(?MODULE).
 
@@ -34,9 +39,10 @@ stop() -> application:stop(?MODULE).
 %% Callbacks
 %%
 
--spec start(normal, list()) -> ignore | {error, _} | {ok, pid()}.
+-spec start(normal, list()) -> {ok, pid()}.
 %% @hidden
-start(normal, _Args) -> semaphore_sup:start_link().
+start(normal, _Args) ->
+    {ok, Pid} = semaphore_sup:start_link().
 
 -spec stop(_) -> ok.
 %% @hidden

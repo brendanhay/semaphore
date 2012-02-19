@@ -15,9 +15,9 @@
 
 -include("include/semaphore.hrl").
 
--type call()  :: {checkout, key(), ctor(), dtor()} | info.
--type mode()  :: unused | force.
--type state() :: gb_tree(). %% gb_tree(key(), {resource(), dtor()})
+-type call()      :: {checkout, key(), ctor(), dtor()} | info.
+-type mode()      :: unused | force.
+-type resources() :: gb_tree(). %% gb_tree(key(), {resource(), dtor()})
 
 %%
 %% API
@@ -37,38 +37,43 @@ init([]) ->
     process_flag(trap_exit, true),
     {ok, gb_trees:empty()}.
 
--spec handle_call(call(), _, state()) -> {reply, any(), state()}.
+-spec handle_call(call(), _, resources()) -> {reply, any(), resources()}.
 %% @hidden
-handle_call({checkout, Key, Ctor, Dtor}, {Pid, _Tag}, State) ->
-    {Reply, NewState} = checkout(Key, Ctor, Dtor, State),
+handle_call({checkout, Key, Ctor, Dtor}, {Pid, _Tag}, Resources) ->
+    {Reply, NewResources} = checkout(Key, Ctor, Dtor, Resources),
     ok = add_counter(Pid, Key),
-    {reply, Reply, NewState};
-handle_call(info, _From, State) ->
-    %% !: Create a proplist of {pid, key, [resources]} for each pid
-    {reply, State, State}.
+    {reply, Reply, NewResources};
+handle_call(info, _From, Resources) ->
+    {reply, info(Resources), Resources}.
 
--spec handle_cast(any(), state()) -> {noreply, state()}.
+-spec handle_cast(any(), resources()) -> {noreply, resources()}.
 %% @hidden
-handle_cast(_Msg, State) -> {noreply, State}.
+handle_cast(_Msg, Resources) -> {noreply, Resources}.
 
--spec handle_info({'DOWN', reference(), process, _, _}, state()) -> {noreply, state()}.
+-spec handle_info({'DOWN', reference(), process, _, _}, resources()) -> {noreply, resources()}.
 %% @hidden
-handle_info({'DOWN', _Ref, process, _From, _Reason}, State) ->
-    {noreply, checkin(State, unused)}.
+handle_info({'DOWN', _Ref, process, _From, _Reason}, Resources) ->
+    {noreply, checkin(Resources, unused)}.
 
--spec terminate(_, state()) -> ok.
+-spec terminate(_, resources()) -> ok.
 %% @hidden
-terminate(_Reason, State) ->
-    _NewState = checkin(State, force),
+terminate(_Reason, Resources) ->
+    _NewResources = checkin(Resources, force),
     ok.
 
--spec code_change(_, state(), _) -> {ok, state()}.
+-spec code_change(_, resources(), _) -> {ok, resources()}.
 %% @hidden
-code_change(_OldVsn, State, _Extra) -> {ok, State}.
+code_change(_OldVsn, Resources, _Extra) -> {ok, Resources}.
 
 %%
 %% Private
 %%
+
+-spec info(resources()) -> [{key(), [pid()]}].
+%% @private
+info(Resources) ->
+    [{K, R, gproc:lookup_pids(?CNTR(K))} ||
+        {K, {R, _D}} <- gb_trees:to_list(Resources)].
 
 -spec add_counter(pid(), key()) -> ok.
 %% @private
@@ -87,7 +92,7 @@ add_counter(Owner, Key) ->
             ok
     end.
 
--spec checkout(key(), ctor(), dtor(), state()) -> {resource(), state()}.
+-spec checkout(key(), ctor(), dtor(), resources()) -> {resource(), resources()}.
 %% @private Find or instantiate a resource
 checkout(Key, Ctor, Dtor, Resources) ->
     %% Check if resources already contains the key
@@ -101,7 +106,7 @@ checkout(Key, Ctor, Dtor, Resources) ->
             {Res, gb_trees:insert(Key, {Res, Dtor}, Resources)}
     end.
 
--spec checkin(state(), mode()) -> state().
+-spec checkin(resources(), mode()) -> resources().
 %% @doc !: Must be a better way to do this than iterating
 %% over every element
 checkin(Resources, Mode) ->
@@ -109,7 +114,7 @@ checkin(Resources, Mode) ->
     checkin(gb_trees:next(Iter), Resources, Mode).
 
 -spec checkin(none | {key(), {resource(), dtor()}, gb_trees:iter()},
-              state(), mode()) -> state().
+              resources(), mode()) -> resources().
 %% @private
 checkin(none, Resources, _Mode) ->
     Resources;

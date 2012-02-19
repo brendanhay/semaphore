@@ -22,10 +22,10 @@ start_link() -> supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 %% Callbacks
 %%
 
--spec init([]) -> {ok, {{supervisor:strategy(), pos_integer(),                  pos_integer()},
+-spec init([]) -> {ok, {{one_for_one, pos_integer(), pos_integer()},
                         [supervisor:child_spec()]}}.
 %% @hidden
 init([]) ->
     Child = {?SERVER, {?SERVER, start_link, [?SERVER]},
              permanent, 8000, worker, [?SERVER]},
-    {ok, {{one_for_one, 0, 1}, [Child]}}.
+    {ok, {{one_for_one, 3, 20}, [Child]}}.

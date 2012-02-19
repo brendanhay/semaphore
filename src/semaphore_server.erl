@@ -16,6 +16,7 @@
 -include("include/semaphore.hrl").
 
 -type call()  :: {checkout, key(), ctor(), dtor()} | info.
+-type mode()  :: unused | force.
 -type state() :: gb_tree(). %% gb_tree(key(), {resource(), dtor()})
 
 %%
@@ -39,10 +40,15 @@ init([]) ->
 -spec handle_call(call(), _, state()) -> {reply, any(), state()}.
 %% @hidden
 handle_call({checkout, Key, Ctor, Dtor}, {Pid, _Tag}, State) ->
-    {Res, NewState} = checkout(Key, Pid, Ctor, Dtor, State),
-    {reply, Res, NewState};
+    {Reply, NewState} =
+        try
+            checkout(Key, Pid, Ctor, Dtor, State)
+        catch
+            error:Reason -> {Reason, State}
+        end,
+    {reply, Reply, NewState};
 handle_call(info, _From, State) ->
-    %% Create a proplist of {pid, key, [resources]} for each pid
+    %% !: Create a proplist of {pid, key, [resources]} for each pid
     {reply, State, State}.
 
 -spec handle_cast(any(), state()) -> {noreply, state()}.
@@ -51,13 +57,13 @@ handle_cast(_Msg, State) -> {noreply, State}.
 
 -spec handle_info({'DOWN', reference(), process, _, _}, state()) -> {noreply, state()}.
 %% @hidden
-handle_info({'DOWN', Ref, process, _From, _Reason}, State) ->
-    {noreply, checkin(Ref, State)}.
+handle_info({'DOWN', _Ref, process, _From, _Reason}, State) ->
+    {noreply, checkin(State, unused)}.
 
 -spec terminate(_, state()) -> ok.
 %% @hidden
 terminate(_Reason, State) ->
-    release_unused(State),
+    _NewState = checkin(State, force),
     ok.
 
 -spec code_change(_, state(), _) -> {ok, state()}.
@@ -76,60 +82,46 @@ checkout(Owner, Key, Ctor, Dtor, Resources) ->
                 {value, {Res, _Dtor}} ->
                     {Res, Resources};
                 none ->
-                    %% Register an aggregated counter for this key
+                    %% Register an aggregate counter for this key
                     true = gproc:reg(?AGGR(Key)),
-                    try
-                        Res = Ctor(),
-                        {Res, gb_trees:insert(Key, {Res, Dtor}, Resources)}
-                    catch
-                        error:Reason ->
-                            {Reason, Resources}
-                    end
+                    Res = Ctor(),
+                    {Res, gb_trees:insert(Key, {Res, Dtor}, Resources)}
             end,
+    %% !: Check Owner doesn't already have a gproc counter assigned
+    true = gproc:reg(?CNTR(Key), 1),
+    %% Pass the counter to the Owner
+    Owner = gproc:give_away(?CNTR(Key), Owner),
     %% Monitor Owner's 'DOWN' messages to automate checkin
     monitor(process, Owner),
-    %% !: Make this safe
-    %% Register a local counter for this key
-    true = gproc:reg(?CNTR(Key)),
-    %% And hand it off the calling process
-    Owner = gproc:give_away(?CNTR(Key), Owner),
     Reply.
 
--spec checkin(reference(), state()) -> state().
+-spec checkin(state(), mode()) -> state().
 %% @doc !: Must be a better way to do this than iterating
 %% over every element
-checkin(Ref, Resources) ->
-    demonitor(Ref),
-    release_unused(Resources).
+checkin(Resources, Mode) ->
+    Iter = gb_trees:iterator(Resources),
+    checkin(gb_trees:next(Iter), Resources, Mode).
 
--spec release_unused(state()) -> state().
-%% @doc !: Must be a better way to do this than iterating
-%% over every element
-release_unused(Resources) ->
-    release_unused(gb_trees:iterator(Resources), Resources).
-
--spec release_unused(none | {key(), {resource(), dtor()}, gb_trees:iter()},
-                     state()) -> state().
+-spec checkin(none | {key(), {resource(), dtor()}, gb_trees:iter()},
+              state(), mode()) -> state().
 %% @private
-release_unused(none, Resources) ->
+checkin(none, Resources, _Mode) ->
     Resources;
-release_unused({Key, {_Res, Dtor}, NextIter}, Resources) ->
-    release_unused(gb_trees:next(NextIter),
-            case try_release(Key, Dtor) of
+checkin({Key, {_Res, Dtor}, NextIter}, Resources, Mode) ->
+    checkin(gb_trees:next(NextIter),
+            case dispose(Key, Dtor, Mode) of
                 true  -> gb_trees:delete(Key, Resources);
                 false -> Resources
-            end).
+            end,
+            Mode).
 
--spec try_release(key(), dtor()) -> true | false.
+-spec dispose(key(), dtor(), mode()) -> true | false.
 %% @private
-try_release(Key, Dtor) ->
-    %% Check the aggregated counter
+dispose(Key, Dtor, force) ->
+    ok = Dtor(),
+    gproc:unreg(?AGGR(Key));
+dispose(Key, Dtor, unused) ->
     case gproc:lookup_value(?AGGR(Key)) of
-        0 ->
-            %% No clients, release
-            ok = Dtor(),
-            %% Remove gproc aggregated counter
-            gproc:unreg(?AGGR(Key));
-        _N ->
-            false
+        0  -> dispose(Key, Dtor, force);
+        _N -> false
     end.

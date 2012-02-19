@@ -1,5 +1,5 @@
 %%
-%% Registered Name
+%% Registered
 %%
 
 -define(SERVER, semaphore_server).
@@ -10,6 +10,13 @@
 
 -type key()      :: any().
 -type resource() :: any().
--type lock()     :: {pid(), key()}.
 -type ctor()     :: fun(() -> resource()).
 -type dtor()     :: fun((resource()) -> ok).
+
+%%
+%% Macros
+%%
+
+-define(CNTR(Name), {c, l, {?SERVER, Name}}).
+-define(AGGR(Name), {a, l, {?SERVER, Name}}).
+

@@ -1,6 +1,6 @@
 REBAR=`which rebar`
 
-.PHONY: all deps build doc test
+.PHONY: all build doc test
 
 all: build test
 

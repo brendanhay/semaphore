@@ -3,7 +3,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/1]).
+-export([start_link/0]).
 
 %% Callbacks
 -export([init/1,
@@ -15,18 +15,16 @@
 
 -include("include/semaphore.hrl").
 
--define(TIMEOUT, 10000).
-
--type state() :: {[lock()], [{key(), resource(), dtor()}]}.
 -type call()  :: {checkout, key(), ctor(), dtor()} | info.
+-type state() :: gb_tree(). %% gb_tree(key(), {resource(), dtor()})
 
 %%
 %% API
 %%
 
--spec start_link(atom()) -> ignore | {error, _} | {ok, pid()}.
+-spec start_link() -> ignore | {error, _} | {ok, pid()}.
 %% @doc
-start_link(Name) -> gen_server:start_link({local, Name}, ?MODULE, [], []).
+start_link() -> gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 %%
 %% Callbacks
@@ -44,6 +42,7 @@ handle_call({checkout, Key, Ctor, Dtor}, {Pid, _Tag}, State) ->
     {Res, NewState} = checkout(Key, Pid, Ctor, Dtor, State),
     {reply, Res, NewState};
 handle_call(info, _From, State) ->
+    %% Create a proplist of {pid, key, [resources]} for each pid
     {reply, State, State}.
 
 -spec handle_cast(any(), state()) -> {noreply, state()}.
@@ -52,13 +51,13 @@ handle_cast(_Msg, State) -> {noreply, State}.
 
 -spec handle_info({'DOWN', reference(), process, _, _}, state()) -> {noreply, state()}.
 %% @hidden
-handle_info({'DOWN', Ref, process, From, _Reason}, State) ->
-    {noreply, checkin(Ref, From, State)}.
+handle_info({'DOWN', Ref, process, _From, _Reason}, State) ->
+    {noreply, checkin(Ref, State)}.
 
 -spec terminate(_, state()) -> ok.
 %% @hidden
 terminate(_Reason, State) ->
-    true = checkin_all(State),
+    release_unused(State),
     ok.
 
 -spec code_change(_, state(), _) -> {ok, state()}.
@@ -69,64 +68,68 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 %% Private
 %%
 
--spec checkout(any(), pid(), ctor(), dtor(), state()) -> {any(), state()}.
+-spec checkout(pid(), key(), ctor(), dtor(), state()) -> {resource(), state()}.
 %% @private Find or instantiate a resource
-checkout(Key, Pid, Ctor, Dtor, {Locks, Resources}) ->
-    NewLocks = lock(Key, Pid, Locks),
-    case find_resource(Key, Resources) of
-        false ->
-            try
-                Res = Ctor(),
-                NewResources = lists:keystore(Key, 1, Resources, {Key, Res, Dtor}),
-                {Res, {NewLocks, NewResources}}
-            catch
-                error:Reason ->
-                    {Reason, {Locks, Resources}}
-            end;
-        {Key, Res, _Dtor} ->
-            {Res, {NewLocks, Resources}}
-    end.
+checkout(Owner, Key, Ctor, Dtor, Resources) ->
+    %% Check if resources already contains the key
+    Reply = case gb_trees:lookup(Key, Resources) of
+                {value, {Res, _Dtor}} ->
+                    {Res, Resources};
+                none ->
+                    %% Register an aggregated counter for this key
+                    true = gproc:reg(?AGGR(Key)),
+                    try
+                        Res = Ctor(),
+                        {Res, gb_trees:insert(Key, {Res, Dtor}, Resources)}
+                    catch
+                        error:Reason ->
+                            {Reason, Resources}
+                    end
+            end,
+    %% Monitor Owner's 'DOWN' messages to automate checkin
+    monitor(process, Owner),
+    %% !: Make this safe
+    %% Register a local counter for this key
+    true = gproc:reg(?CNTR(Key)),
+    %% And hand it off the calling process
+    Owner = gproc:give_away(?CNTR(Key), Owner),
+    Reply.
 
--spec checkin(reference(), pid(), state()) -> state().
-%% @private
-checkin(Ref, Pid, {Locks, Resources}) ->
-    case unlock(Ref, Pid, Locks) of
-        {false, Locks}  -> {Locks, Resources};
-        {Key, NewLocks} -> {NewLocks, free_resource(Key, NewLocks, Resources)}
-    end.
-
--spec checkin_all(state()) -> true | false.
-%% @private
-checkin_all({_Locks, Resources}) ->
-    lists:all(fun(D) -> D =:= ok end,
-              [Dtor(Res) || {_Key, Res, Dtor} <- Resources]).
-
--spec free_resource(any(), [lock()], [resource()]) -> any().
-%% @private
-free_resource(Key, Locks, Resources) ->
-    case lists:keymember(Key, 2, Locks) of
-        true ->
-            Resources;
-        false ->
-            {Key, Res, Dtor} = find_resource(Key, Resources),
-            ok = Dtor(Res),
-            lists:keydelete(Key, 1, Resources)
-    end.
-
--spec find_resource(any(), [resource()]) -> false | tuple().
-%% @private
-find_resource(Key, Resources) -> lists:keyfind(Key, 1, Resources).
-
--spec lock(any(), pid(), [lock()]) -> [lock()].
-%% @private Add a {Key, Pid} tuple to owners
-lock(Key, Pid, Locks) ->
-    monitor(process, Pid),
-    [{Pid, Key}|Locks].
-
--spec unlock(reference(), pid(), [lock()]) -> {any(), [lock()]}.
-unlock(Ref, Pid, Locks) ->
+-spec checkin(reference(), state()) -> state().
+%% @doc !: Must be a better way to do this than iterating
+%% over every element
+checkin(Ref, Resources) ->
     demonitor(Ref),
-    case lists:keyfind(Pid, 1, Locks) of
-        {Pid, Key} -> {Key, lists:keydelete(Pid, 1, Locks)};
-        false      -> {false, Locks}
+    release_unused(Resources).
+
+-spec release_unused(state()) -> state().
+%% @doc !: Must be a better way to do this than iterating
+%% over every element
+release_unused(Resources) ->
+    release_unused(gb_trees:iterator(Resources), Resources).
+
+-spec release_unused(none | {key(), {resource(), dtor()}, gb_trees:iter()},
+                     state()) -> state().
+%% @private
+release_unused(none, Resources) ->
+    Resources;
+release_unused({Key, {_Res, Dtor}, NextIter}, Resources) ->
+    release_unused(gb_trees:next(NextIter),
+            case try_release(Key, Dtor) of
+                true  -> gb_trees:delete(Key, Resources);
+                false -> Resources
+            end).
+
+-spec try_release(key(), dtor()) -> true | false.
+%% @private
+try_release(Key, Dtor) ->
+    %% Check the aggregated counter
+    case gproc:lookup_value(?AGGR(Key)) of
+        0 ->
+            %% No clients, release
+            ok = Dtor(),
+            %% Remove gproc aggregated counter
+            gproc:unreg(?AGGR(Key));
+        _N ->
+            false
     end.

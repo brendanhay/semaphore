@@ -14,6 +14,8 @@
 
 -include("include/semaphore.hrl").
 
+-define(TIMEOUT, 10000).
+
 %%
 %% API
 %%
@@ -21,11 +23,11 @@
 -spec checkout(key(), ctor(), dtor()) -> resource().
 %% @doc
 checkout(Key, Ctor, Dtor) ->
-    gen_server:call(?SERVER, {checkout, Key, Ctor, Dtor}).
+    gen_server:call(?SERVER, {checkout, Key, Ctor, Dtor}, ?TIMEOUT).
 
--spec info() -> {[lock()], [{key(), resource()}]}.
+-spec info() -> gb_tree().
 %% @doc
-info() -> gen_server:call(?SERVER, info).
+info() -> gen_server:call(?SERVER, info, ?TIMEOUT).
 
 -spec start() ->  ok | {error, _}.
 %% @doc
@@ -42,7 +44,7 @@ stop() -> application:stop(?MODULE).
 -spec start(normal, list()) -> {ok, pid()}.
 %% @hidden
 start(normal, _Args) ->
-    {ok, Pid} = semaphore_sup:start_link().
+    {ok, _Pid} = semaphore_sup:start_link().
 
 -spec stop(_) -> ok.
 %% @hidden

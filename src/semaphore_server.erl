@@ -31,21 +31,17 @@ start_link() -> gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 %% Callbacks
 %%
 
--spec init([]) -> {ok, {[], []}}.
+-spec init([]) -> {ok, gb_tree()}.
 %% @hidden
 init([]) ->
     process_flag(trap_exit, true),
-    {ok, {[], []}}.
+    {ok, gb_trees:empty()}.
 
 -spec handle_call(call(), _, state()) -> {reply, any(), state()}.
 %% @hidden
 handle_call({checkout, Key, Ctor, Dtor}, {Pid, _Tag}, State) ->
-    {Reply, NewState} =
-        try
-            checkout(Key, Pid, Ctor, Dtor, State)
-        catch
-            error:Reason -> {Reason, State}
-        end,
+    {Reply, NewState} = checkout(Key, Ctor, Dtor, State),
+    ok = add_counter(Pid, Key),
     {reply, Reply, NewState};
 handle_call(info, _From, State) ->
     %% !: Create a proplist of {pid, key, [resources]} for each pid
@@ -74,26 +70,36 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 %% Private
 %%
 
--spec checkout(pid(), key(), ctor(), dtor(), state()) -> {resource(), state()}.
+-spec add_counter(pid(), key()) -> ok.
+%% @private
+add_counter(Owner, Key) ->
+    %% !: (efficiency) Check if Owner already has a counter
+    case lists:member(Owner, gproc:lookup_pids(?CNTR(Key))) of
+        true ->
+            ok;
+        false ->
+            %% Monitor Owner's 'DOWN' messages to automate checkin
+            _Ref = monitor(process, Owner),
+            %% Add a counter of 1
+            true = gproc:reg(?CNTR(Key), 1),
+            %% Transfer the counter to Owner
+            Owner = gproc:give_away(?CNTR(Key), Owner),
+            ok
+    end.
+
+-spec checkout(key(), ctor(), dtor(), state()) -> {resource(), state()}.
 %% @private Find or instantiate a resource
-checkout(Owner, Key, Ctor, Dtor, Resources) ->
+checkout(Key, Ctor, Dtor, Resources) ->
     %% Check if resources already contains the key
-    Reply = case gb_trees:lookup(Key, Resources) of
-                {value, {Res, _Dtor}} ->
-                    {Res, Resources};
-                none ->
-                    %% Register an aggregate counter for this key
-                    true = gproc:reg(?AGGR(Key)),
-                    Res = Ctor(),
-                    {Res, gb_trees:insert(Key, {Res, Dtor}, Resources)}
-            end,
-    %% !: Check Owner doesn't already have a gproc counter assigned
-    true = gproc:reg(?CNTR(Key), 1),
-    %% Pass the counter to the Owner
-    Owner = gproc:give_away(?CNTR(Key), Owner),
-    %% Monitor Owner's 'DOWN' messages to automate checkin
-    monitor(process, Owner),
-    Reply.
+    case gb_trees:lookup(Key, Resources) of
+        {value, {Res, _Dtor}} ->
+            {Res, Resources};
+        none ->
+            %% Register an aggregate counter for this key
+            true = gproc:reg(?AGGR(Key)),
+            Res = Ctor(),
+            {Res, gb_trees:insert(Key, {Res, Dtor}, Resources)}
+    end.
 
 -spec checkin(state(), mode()) -> state().
 %% @doc !: Must be a better way to do this than iterating
@@ -107,21 +113,21 @@ checkin(Resources, Mode) ->
 %% @private
 checkin(none, Resources, _Mode) ->
     Resources;
-checkin({Key, {_Res, Dtor}, NextIter}, Resources, Mode) ->
+checkin({Key, Value, NextIter}, Resources, Mode) ->
     checkin(gb_trees:next(NextIter),
-            case dispose(Key, Dtor, Mode) of
+            case dispose(Key, Value, Mode) of
                 true  -> gb_trees:delete(Key, Resources);
                 false -> Resources
             end,
             Mode).
 
--spec dispose(key(), dtor(), mode()) -> true | false.
+-spec dispose(key(), {resource(), dtor()}, mode()) -> true | false.
 %% @private
-dispose(Key, Dtor, force) ->
-    ok = Dtor(),
+dispose(Key, {Res, Dtor}, force) ->
+    ok = Dtor(Res),
     gproc:unreg(?AGGR(Key));
-dispose(Key, Dtor, unused) ->
+dispose(Key, Value, unused) ->
     case gproc:lookup_value(?AGGR(Key)) of
-        0  -> dispose(Key, Dtor, force);
+        0  -> dispose(Key, Value, force);
         _N -> false
     end.

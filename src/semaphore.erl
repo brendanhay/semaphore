@@ -31,7 +31,7 @@ info() -> gen_server:call(?SERVER, info, ?TIMEOUT).
 
 -spec start() ->  ok | {error, _}.
 %% @doc
-start() -> application:start(?MODULE).
+start() -> start(?MODULE).
 
 -spec stop() -> ok.
 %% @doc
@@ -43,9 +43,29 @@ stop() -> application:stop(?MODULE).
 
 -spec start(normal, list()) -> {ok, pid()}.
 %% @hidden
-start(normal, _Args) ->
-    {ok, _Pid} = semaphore_sup:start_link().
+start(normal, _Args) -> semaphore_sup:start_link().
 
 -spec stop(_) -> ok.
 %% @hidden
 stop(_State) -> ok.
+
+%%
+%% Dependencies
+%%
+
+-spec start(atom()) -> ok.
+%% @private
+start(App) -> ensure_started(App, application:start(App, permanent)).
+
+-spec ensure_started(atom(), ok | {error, {already_started, atom()} | {not_started, atom()}}) -> ok.
+%% @private
+ensure_started(_App, ok) ->
+    ok;
+ensure_started(_App, {error, {already_started, _App}}) ->
+    ok;
+ensure_started(App, {error, {not_started, Dep}}) ->
+    start(Dep),
+    start(App);
+ensure_started(App, {error, Reason}) ->
+    erlang:error({app_start_failed, App, Reason}).
+

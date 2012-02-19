@@ -26,6 +26,6 @@ start_link() -> supervisor:start_link({local, ?MODULE}, ?MODULE, []).
                         [supervisor:child_spec()]}}.
 %% @hidden
 init([]) ->
-    Child = {?SERVER, {?SERVER, start_link, [?SERVER]},
+    Child = {?SERVER, {?SERVER, start_link, []},
              permanent, 8000, worker, [?SERVER]},
     {ok, {{one_for_one, 3, 20}, [Child]}}.

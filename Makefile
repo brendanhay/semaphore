@@ -9,7 +9,7 @@ build:
 	$(MAKE) xref
 
 console: build
-	exec erl -pa ../semaphore/ebin -sname semaphore_dev -s semaphore
+	exec erl -pa deps/*/ebin ebin -sname semaphore -s semaphore
 
 doc: build
 	$(REBAR) skip_deps=true doc

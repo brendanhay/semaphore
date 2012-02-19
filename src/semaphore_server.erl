@@ -69,7 +69,7 @@ code_change(_OldVsn, Resources, _Extra) -> {ok, Resources}.
 %% Private
 %%
 
--spec info(resources()) -> [{key(), [pid()]}].
+-spec info(resources()) -> [{key(), resource(), [pid()]}].
 %% @private
 info(Resources) ->
     [{K, R, gproc:lookup_pids(?CNTR(K))} ||

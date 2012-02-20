@@ -117,13 +117,14 @@ dispose(_Owner, [], Resources) ->
 dispose(Owner, [Key|T], Resources) ->
     {Res, Dtor, Pids} = gb_trees:get(Key, Resources),
     NewPids = gb_sets:delete(Owner, Pids),
-    case gb_sets:is_empty(NewPids) of
-        true ->
-            ok = Dtor(Res),
-            gb_trees:delete(Key, Resources);
-        false ->
-            gb_trees:update(Key, {Res, Dtor, NewPids}, Resources)
-    end.
+    NewResources = case gb_sets:is_empty(NewPids) of
+                       true ->
+                           ok = Dtor(Res),
+                           gb_trees:delete(Key, Resources);
+                       false ->
+                           gb_trees:update(Key, {Res, Dtor, NewPids}, Resources)
+                   end,
+    dispose(Owner, T, NewResources).
 
 -spec dispose_all(none | {key(), {resource(), dtor(), gb_set()}, gb_trees:iter()} |
                   resources()) -> ok.

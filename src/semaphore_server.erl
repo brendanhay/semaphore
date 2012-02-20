@@ -17,7 +17,9 @@
 
 -type call()      :: {checkout, key(), ctor(), dtor()} | info.
 -type mode()      :: unused | force.
--type resources() :: gb_tree(). %% gb_tree(key(), {resource(), dtor()})
+-type resources() :: gb_tree(). %% gb_tree(key(), {resource(), dtor(), [pid()]}).
+-type index()     :: gb_tree(). %% gb_tree(pid(), [key()]).
+-type state()     :: {resources(), index()}.
 
 %%
 %% API
@@ -31,108 +33,107 @@ start_link() -> gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 %% Callbacks
 %%
 
--spec init([]) -> {ok, gb_tree()}.
+-spec init([]) -> {ok, state()}.
 %% @hidden
 init([]) ->
     process_flag(trap_exit, true),
-    {ok, gb_trees:empty()}.
+    {ok, {gb_trees:empty(), gb_trees:empty()}}.
 
--spec handle_call(call(), _, resources()) -> {reply, any(), resources()}.
+-spec handle_call(call(), _, state()) -> {reply, resource() | state(), state()}.
 %% @hidden
-handle_call({checkout, Key, Ctor, Dtor}, {Pid, _Tag}, Resources) ->
-    {Reply, NewResources} = checkout(Key, Ctor, Dtor, Resources),
-    ok = add_counter(Pid, Key),
-    {reply, Reply, NewResources};
-handle_call(info, _From, Resources) ->
-    {reply, info(Resources), Resources}.
+handle_call({checkout, Key, Ctor, Dtor}, {Pid, _Tag}, State) ->
+    {Reply, NewState} = checkout(Pid, Key, Ctor, Dtor, State),
+    {reply, Reply, NewState};
+handle_call(info, _From, State) ->
+    {reply, info(State), State}.
 
--spec handle_cast(any(), resources()) -> {noreply, resources()}.
+-spec handle_cast(any(), state()) -> {noreply, state()}.
 %% @hidden
-handle_cast(_Msg, Resources) -> {noreply, Resources}.
+handle_cast(_Msg, State) -> {noreply, State}.
 
--spec handle_info({'DOWN', reference(), process, _, _}, resources()) -> {noreply, resources()}.
+-spec handle_info({'DOWN', reference(), process, _, _}, state()) -> {noreply, state()}.
 %% @hidden
-handle_info({'DOWN', _Ref, process, _From, _Reason}, Resources) ->
-    {noreply, checkin(Resources, unused)}.
+handle_info({'DOWN', _Ref, process, From, _Reason}, State) ->
+    {noreply, checkin(From, State)}.
 
--spec terminate(_, resources()) -> ok.
+-spec terminate(_, state()) -> ok.
 %% @hidden
-terminate(_Reason, Resources) ->
-    _NewResources = checkin(Resources, force),
-    ok.
+terminate(_Reason, {Resources, _Index}) ->
+    dispose_all(Resources).
 
--spec code_change(_, resources(), _) -> {ok, resources()}.
+-spec code_change(_, state(), _) -> {ok, state()}.
 %% @hidden
-code_change(_OldVsn, Resources, _Extra) -> {ok, Resources}.
+code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
 %%
 %% Private
 %%
 
--spec info(resources()) -> [{key(), resource(), [pid()]}].
+-spec info(state()) -> state().
 %% @private
-info(Resources) ->
-    [{K, R, gproc:lookup_pids(?CNTR(K))} ||
-        {K, {R, _D}} <- gb_trees:to_list(Resources)].
+info(State) -> State.
 
--spec add_counter(pid(), key()) -> ok.
-%% @private
-add_counter(Owner, Key) ->
-    %% !: (efficiency) Check if Owner already has a counter
-    case lists:member(Owner, gproc:lookup_pids(?CNTR(Key))) of
-        true ->
-            ok;
-        false ->
-            %% Monitor Owner's 'DOWN' messages to automate checkin
-            _Ref = monitor(process, Owner),
-            %% Add a counter of 1
-            true = gproc:reg(?CNTR(Key), 1),
-            %% Transfer the counter to Owner
-            Owner = gproc:give_away(?CNTR(Key), Owner),
-            ok
-    end.
-
--spec checkout(key(), ctor(), dtor(), resources()) -> {resource(), resources()}.
+-spec checkout(pid(), key(), ctor(), dtor(), state()) -> {resource(), state()}.
 %% @private Find or instantiate a resource
-checkout(Key, Ctor, Dtor, Resources) ->
-    %% Check if resources already contains the key
+checkout(Owner, Key, Ctor, Dtor, {Resources, Index}) ->
+    monitor(process, Owner),
+    NewIndex = index(Owner, Key, Index),
     case gb_trees:lookup(Key, Resources) of
-        {value, {Res, _Dtor}} ->
-            {Res, Resources};
+        {value, {Res, Dtor, Pids}} ->
+            Value = {Res, Dtor, gb_sets:add(Owner, Pids)},
+            {Res, {gb_trees:update(Key, Value, Resources), NewIndex}};
         none ->
-            %% Register an aggregate counter for this key
-            true = gproc:reg(?AGGR(Key)),
             Res = Ctor(),
-            {Res, gb_trees:insert(Key, {Res, Dtor}, Resources)}
+            Value = {Res, Dtor, gb_sets:from_list([Owner])},
+            {Res, {gb_trees:insert(Key, Value, Resources), NewIndex}}
     end.
 
--spec checkin(resources(), mode()) -> resources().
-%% @doc !: Must be a better way to do this than iterating
-%% over every element
-checkin(Resources, Mode) ->
-    Iter = gb_trees:iterator(Resources),
-    checkin(gb_trees:next(Iter), Resources, Mode).
+-spec index(pid(), key(), index()) -> index().
+%% @private Associate Key with Owner for reverse lookup
+index(Owner, Key, Index) ->
+    case gb_trees:lookup(Owner, Index) of
+        {value, Keys} -> gb_trees:update(Owner, gb_sets:add(Key, Keys), Index);
+        none          -> gb_trees:insert(Owner, gb_sets:from_list([Key]), Index)
+    end.
 
--spec checkin(none | {key(), {resource(), dtor()}, gb_trees:iter()},
-              resources(), mode()) -> resources().
+-spec checkin(pid(), state()) -> state().
 %% @private
-checkin(none, Resources, _Mode) ->
+checkin(Owner, {Resources, Index}) ->
+    {UsedKeys, NewIndex} = deindex(Owner, Index),
+    {dispose(Owner, UsedKeys, Resources), NewIndex}.
+
+-spec deindex(pid(), index()) -> {[key()], index()}.
+%% @private
+deindex(Owner, Index) ->
+    %% Get a list of keys assigned to Owner
+    Keys = gb_sets:to_list(gb_trees:get(Owner, Index)),
+    %% Remove Owner from Index
+    {Keys, gb_trees:delete(Owner, Index)}.
+
+-spec dispose(pid(), [key()], resources()) -> resources().
+%% @private
+dispose(_Owner, [], Resources) ->
     Resources;
-checkin({Key, Value, NextIter}, Resources, Mode) ->
-    checkin(gb_trees:next(NextIter),
-            case dispose(Key, Value, Mode) of
-                true  -> gb_trees:delete(Key, Resources);
-                false -> Resources
-            end,
-            Mode).
-
--spec dispose(key(), {resource(), dtor()}, mode()) -> true | false.
-%% @private
-dispose(Key, {Res, Dtor}, force) ->
-    ok = Dtor(Res),
-    gproc:unreg(?AGGR(Key));
-dispose(Key, Value, unused) ->
-    case gproc:lookup_value(?AGGR(Key)) of
-        0  -> dispose(Key, Value, force);
-        _N -> false
+dispose(Owner, [Key|T], Resources) ->
+    {Res, Dtor, Pids} = gb_trees:get(Key, Resources),
+    NewPids = gb_sets:delete(Owner, Pids),
+    case gb_sets:is_empty(NewPids) of
+        true ->
+            ok = Dtor(Res),
+            gb_trees:delete(Key, Resources);
+        false ->
+            gb_trees:update(Key, {Res, Dtor, NewPids}, Resources)
     end.
+
+-spec dispose_all(none | {key(), {resource(), dtor(), gb_set()}, gb_trees:iter()} |
+                  resources()) -> ok.
+%% @private
+dispose_all(none) ->
+    ok;
+dispose_all({_Key, {Res, Dtor, Pids}, Iter}) ->
+    _True = [demonitor(P) || P <- gb_sets:to_list(Pids)],
+    ok = Dtor(Res),
+    dispose_all(gb_trees:next(Iter));
+dispose_all(Resources) ->
+    dispose_all(gb_trees:next(gb_trees:iterator(Resources))).
+

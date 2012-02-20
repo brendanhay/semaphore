@@ -16,7 +16,6 @@
 -include("include/semaphore.hrl").
 
 -type call()      :: {checkout, key(), ctor(), dtor()} | info.
--type mode()      :: unused | force.
 -type resources() :: gb_tree(). %% gb_tree(key(), {resource(), dtor(), [pid()]}).
 -type index()     :: gb_tree(). %% gb_tree(pid(), [key()]).
 -type state()     :: {resources(), index()}.

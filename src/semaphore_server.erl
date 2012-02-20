@@ -69,9 +69,10 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 %% Private
 %%
 
--spec info(state()) -> state().
+-spec info(state()) -> [{pid(), [key()]}].
 %% @private
-info(State) -> State.
+info({_Resources, Index}) ->
+    [{P, gb_sets:to_list(K)} || {P, K} <- gb_trees:to_list(Index)].
 
 -spec checkout(pid(), key(), ctor(), dtor(), state()) -> {resource(), state()}.
 %% @private Find or instantiate a resource

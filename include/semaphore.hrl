@@ -12,4 +12,3 @@
 -type resource() :: any().
 -type ctor()     :: fun(() -> resource()).
 -type dtor()     :: fun((resource()) -> ok).
-

@@ -25,7 +25,7 @@
 checkout(Key, Ctor, Dtor) ->
     gen_server:call(?SERVER, {checkout, Key, Ctor, Dtor}, ?TIMEOUT).
 
--spec info() -> gb_tree().
+-spec info() -> [{pid(), [key()]}].
 %% @doc
 info() -> gen_server:call(?SERVER, info, ?TIMEOUT).
 

@@ -1,25 +1,34 @@
+#
+# Targets
+#
+
 REBAR=`which rebar`
 
-.PHONY: all build doc test
+.PHONY: build
 
-all: build test
+all: build
 
-build:
-	$(REBAR) get-deps compile
-	$(MAKE) xref
+clean:
+	rm -rf ebin log doc erl_crash.dump
+	$(REBAR) clean
 
-console: build
-	exec erl -pa deps/*/ebin ebin -sname semaphore -s semaphore
+build: deps
+	$(REBAR) compile
+	$(REBAR) skip_deps=true xref
 
-doc: build
-	$(REBAR) skip_deps=true doc
+deps:
+	$(REBAR) get-deps
 
 test: build
 	rm -rf .eunit
 	$(REBAR) skip_deps=true eunit
 
-clean:
-	$(REBAR) clean
+boot:
+	exec erl -pa ebin -sname semaphore -s semaphore
+
+#
+# Analysis
+#
 
 PLT=./plt/R14B04.plt
 
@@ -39,9 +48,4 @@ build-plt: deps build
 
 dialyzer: build
 	dialyzer ebin --plt $(PLT) $(WARNINGS)
-
-xref:
-	$(REBAR) skip_deps=true xref
-
-
 

@@ -1,22 +1,23 @@
+%% This Source Code Form is subject to the terms of
+%% the Mozilla Public License, v. 2.0.
+%% A copy of the MPL can be found in the LICENSE file or
+%% you can obtain it at http://mozilla.org/MPL/2.0/.
+%%
+%% @author Brendan Hay
+%% @copyright (c) 2012 Brendan Hay <brendan@soundcloud.com>
 %% @doc
--module(semaphore_test).
+%%
 
--compile(export_all).
+-module(semaphore_test).
 
 -include_lib("eunit/include/eunit.hrl").
 -include("include/semaphore.hrl").
 
-start_child(Fun) ->
-    proc_lib:start_link(?MODULE, init_child, [self(), Fun]).
+-compile(export_all).
 
-init_child(Parent, Fun) ->
-    proc_lib:init_ack(Parent, self()),
-    Res = Fun(),
-    receive stop -> Parent ! Res end.
-
-stop_child(Pid) ->
-    Pid ! stop,
-    receive Any -> Any end.
+%%
+%% Fixtures
+%%
 
 setup() ->
     semaphore:start(),
@@ -105,3 +106,19 @@ release_resource() ->
     ?assert(receive Res -> true
             after   100 -> false
             end).
+
+%%
+%% Helpers
+%%
+
+start_child(Fun) ->
+    proc_lib:start_link(?MODULE, init_child, [self(), Fun]).
+
+init_child(Parent, Fun) ->
+    proc_lib:init_ack(Parent, self()),
+    Res = Fun(),
+    receive stop -> Parent ! Res end.
+
+stop_child(Pid) ->
+    Pid ! stop,
+    receive Any -> Any end.
